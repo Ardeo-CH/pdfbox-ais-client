@@ -56,7 +56,7 @@ public class TestOnDemandSignatureWithStepUp {
 
             // the image place, size and location are customizable
             // to create a visible signature in the pdf, specify the signature definition and the page. Optionally, provide an icon that will be embedded in the visual signature
-            document.setVisibleSignatureDefinition(new VisibleSignatureDefinition(200, 200, 150, 30, 0, properties.getProperty("local.test.visibleSignatureFile")));
+            document.setVisibleSignatureDefinition(new VisibleSignatureDefinition(200, 200, 150, 30, 0, properties.getProperty("local.test.visibleSignatureFile"), null));
  
             SignatureResult result = aisClient.signWithOnDemandCertificateAndStepUp(Collections.singletonList(document), userData);
             System.out.println("Final result: " + result);

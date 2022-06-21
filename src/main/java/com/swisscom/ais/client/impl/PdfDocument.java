@@ -36,7 +36,9 @@ import org.apache.pdfbox.pdmodel.PDResources;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.common.PDStream;
 import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDTrueTypeFont;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.encoding.Encoding;
 import org.apache.pdfbox.pdmodel.graphics.form.PDFormXObject;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget;
@@ -64,6 +66,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Calendar;
 import java.util.List;
+import java.util.Map;
 
 import static com.swisscom.ais.client.utils.Utils.closeResource;
 
@@ -104,7 +107,7 @@ public class PdfDocument implements Closeable {
         int accessPermissions = getDocumentPermissions();
         if (accessPermissions == 1) {
             throw new AisClientException("Cannot sign document [" + name + "]. Document contains a certification " +
-                                         "that does not allow any changes.");
+                    "that does not allow any changes.");
         }
 
         PDSignature pdSignature = new PDSignature();
@@ -138,13 +141,7 @@ public class PdfDocument implements Closeable {
 
         // create a visible signature at the specified coordinates
         if (signatureDefinition != null) {
-            Rectangle2D
-                humanRect =
-                new Rectangle2D.Float(signatureDefinition.getX(), signatureDefinition.getY(), signatureDefinition.getWidth(),
-                                      signatureDefinition.getHeight());
-            PDRectangle rect = createSignatureRectangle(pdDocument, humanRect);
-            options.setVisualSignature(
-                createVisualSignatureTemplate(pdDocument, signatureDefinition.getPage(), signatureDefinition.getIconPath(), rect, pdSignature));
+            options.setVisualSignature(createVisualSignatureTemplate(pdDocument, signatureDefinition));
             options.setPage(signatureDefinition.getPage());
         }
 
@@ -202,8 +199,8 @@ public class PdfDocument implements Closeable {
      * Get the permissions for this document from the DocMDP transform parameters dictionary.
      *
      * @return the permission integer value. 0 means no DocMDP transform parameters dictionary exists. Other
-     *     returned values are 1, 2 or 3. 2 is also returned if the DocMDP dictionary is found but did not
-     *     contain a /P entry, or if the value is outside the valid range.
+     * returned values are 1, 2 or 3. 2 is also returned if the DocMDP dictionary is found but did not
+     * contain a /P entry, or if the value is outside the valid range.
      */
     private int getDocumentPermissions() {
         COSBase base = pdDocument.getDocumentCatalog().getCOSObject().getDictionaryObject(COSName.PERMS);
@@ -281,50 +278,15 @@ public class PdfDocument implements Closeable {
 
     // ----------------------------------------------------------------------------------------------------
 
-    private PDRectangle createSignatureRectangle(PDDocument doc, Rectangle2D humanRect) {
-        float x = (float) humanRect.getX();
-        float y = (float) humanRect.getY();
-        float width = (float) humanRect.getWidth();
-        float height = (float) humanRect.getHeight();
-        PDPage page = doc.getPage(0);
-        PDRectangle pageRect = page.getCropBox();
-        PDRectangle rect = new PDRectangle();
-        // signing should be at the same position regardless of page rotation.
-        switch (page.getRotation()) {
-            case 90:
-                rect.setLowerLeftY(x);
-                rect.setUpperRightY(x + width);
-                rect.setLowerLeftX(y);
-                rect.setUpperRightX(y + height);
-                break;
-            case 180:
-                rect.setUpperRightX(pageRect.getWidth() - x);
-                rect.setLowerLeftX(pageRect.getWidth() - x - width);
-                rect.setLowerLeftY(y);
-                rect.setUpperRightY(y + height);
-                break;
-            case 270:
-                rect.setLowerLeftY(pageRect.getHeight() - x - width);
-                rect.setUpperRightY(pageRect.getHeight() - x);
-                rect.setLowerLeftX(pageRect.getWidth() - y - height);
-                rect.setUpperRightX(pageRect.getWidth() - y);
-                break;
-            case 0:
-            default:
-                rect.setLowerLeftX(x);
-                rect.setUpperRightX(x + width);
-                rect.setLowerLeftY(pageRect.getHeight() - y - height);
-                rect.setUpperRightY(pageRect.getHeight() - y);
-                break;
-        }
-        return rect;
-    }
-
     // create a template PDF document with empty signature and return it as a stream.
-    private InputStream createVisualSignatureTemplate(PDDocument srcDoc, int pageNum, String iconPath, PDRectangle rect, PDSignature signature)
-        throws IOException {
+    private InputStream createVisualSignatureTemplate(PDDocument srcDoc, VisibleSignatureDefinition signatureDefinition) throws IOException {
         try (PDDocument doc = new PDDocument()) {
-            PDPage page = new PDPage(srcDoc.getPage(pageNum).getMediaBox());
+            if (signatureDefinition.getPage() < 0) {
+                // fall back to last page if there is a negative page number
+                signatureDefinition.setPage(srcDoc.getNumberOfPages() - 1);
+            }
+
+            PDPage page = new PDPage(srcDoc.getPage(signatureDefinition.getPage()).getMediaBox());
             doc.addPage(page);
             PDAcroForm acroForm = new PDAcroForm(doc);
             doc.getDocumentCatalog().setAcroForm(acroForm);
@@ -336,6 +298,30 @@ public class PdfDocument implements Closeable {
             acroForm.getCOSObject().setDirect(true);
             acroFormFields.add(signatureField);
 
+            var meta = signatureDefinition.getMeta();
+            var lineHeight = 10;
+
+            if (signatureDefinition.getX() < 0) {
+                // fall back to "sane" defaults if no X position is given
+                var pageHalf = (int) (page.getCropBox().getWidth() / 2);
+                var baseX = meta.getOrDefault("signatureRole", "").equals("admin")
+                        ? pageHalf - signatureDefinition.getWidth() - 30
+                        : pageHalf + 30;
+                signatureDefinition.setX(baseX);
+            }
+
+            if (signatureDefinition.getY() < 0) {
+                // fall back to "sane" defaults if no Y position is given
+                var baseY = lineHeight * 8; // remember: pdf Y starts at the bottom :)
+                signatureDefinition.setY(baseY);
+            }
+
+            var rect = new PDRectangle();
+            rect.setLowerLeftX(signatureDefinition.getX());
+            rect.setUpperRightX(signatureDefinition.getX() + signatureDefinition.getWidth());
+            rect.setLowerLeftY(signatureDefinition.getY());
+            rect.setUpperRightY(signatureDefinition.getY() + signatureDefinition.getHeight());
+
             widget.setRectangle(rect);
 
             // from PDVisualSigBuilder.createHolderForm()
@@ -345,30 +331,12 @@ public class PdfDocument implements Closeable {
             form.setResources(res);
             form.setFormType(1);
             PDRectangle bbox = new PDRectangle(rect.getWidth(), rect.getHeight());
-            float height = bbox.getHeight();
-            Matrix initialScale = null;
-            switch (srcDoc.getPage(pageNum).getRotation()) {
-                case 90:
-                    form.setMatrix(AffineTransform.getQuadrantRotateInstance(1));
-                    initialScale = Matrix.getScaleInstance(bbox.getWidth() / bbox.getHeight(),
-                                                           bbox.getHeight() / bbox.getWidth());
-                    height = bbox.getWidth();
-                    break;
-                case 180:
-                    form.setMatrix(AffineTransform.getQuadrantRotateInstance(2));
-                    break;
-                case 270:
-                    form.setMatrix(AffineTransform.getQuadrantRotateInstance(3));
-                    initialScale = Matrix.getScaleInstance(bbox.getWidth() / bbox.getHeight(),
-                                                           bbox.getHeight() / bbox.getWidth());
-                    height = bbox.getWidth();
-                    break;
-                case 0:
-                default:
-                    break;
+            switch (srcDoc.getPage(signatureDefinition.getPage()).getRotation()) {
+                case 90 -> form.setMatrix(AffineTransform.getQuadrantRotateInstance(1));
+                case 180 -> form.setMatrix(AffineTransform.getQuadrantRotateInstance(2));
+                case 270 -> form.setMatrix(AffineTransform.getQuadrantRotateInstance(3));
             }
             form.setBBox(bbox);
-            PDFont font = PDType1Font.HELVETICA_BOLD;
 
             // from PDVisualSigBuilder.createAppearanceDictionary()
             PDAppearanceDictionary appearance = new PDAppearanceDictionary();
@@ -377,48 +345,47 @@ public class PdfDocument implements Closeable {
             appearance.setNormalAppearance(appearanceStream);
             widget.setAppearance(appearance);
 
-            try (PDPageContentStream cs = new PDPageContentStream(doc, appearanceStream)) {
-                // for 90° and 270° scale ratio of width / height
-                // not really sure about this
-                // why does scale have no effect when done in the form matrix???
-                if (initialScale != null) {
-                    cs.transform(initialScale);
-                }
+            // MODIFICATIONS BY ARDEO GBMH
+            try (PDPageContentStream contentStream = new PDPageContentStream(doc, appearanceStream)) {
+                // load font & add pdf text (bottom to top)
+                contentStream.beginText();
+                contentStream.setFont(PDType1Font.HELVETICA, 7); // on the first call per app instance, this will take some time
 
-                if(iconPath != null) {
-                    File image = new File(iconPath);
-                    if (image != null && image.exists()) {
-                        // show background image
-                        // save and restore graphics if the image is too large and needs to be scaled
-                        cs.saveGraphicsState();
-                        cs.transform(Matrix.getScaleInstance(0.25f, 0.25f));
-                        PDImageXObject img = PDImageXObject.createFromFileByExtension(image, doc);
-                        cs.drawImage(img, 0, 0);
-                        cs.restoreGraphicsState();
+                contentStream.newLineAtOffset(22, 3); // lift the 1st line a bit, otherwise it will not fit into the rectangle
+                contentStream.showText("Signiert auf QuickPool");
+                contentStream.newLineAtOffset(0, lineHeight);
+                contentStream.showText("Qualifizierte elektronische Signatur - Schweizer Recht");
+
+                contentStream.newLineAtOffset(-22, lineHeight + 4);
+                contentStream.showText(meta.getOrDefault("additionalText", ""));
+                contentStream.newLineAtOffset(0, lineHeight);
+                contentStream.showText(
+                        // if location is set, print the location
+                        meta.getOrDefault("signatureLocation", "")
+                                + (
+                                // otherwise just print the date or the fallback (empty string)
+                                // if location and date is set, add the ", " string and print date
+                                meta.containsKey("signatureLocation") && meta.containsKey("signatureDate")
+                                        ? ", " + meta.get("signatureDate")
+                                        : meta.getOrDefault("signatureDate", "")));
+                contentStream.newLineAtOffset(0, lineHeight);
+
+                contentStream.setFont(loadFont(doc), 13); // use a custom font for the person name
+                contentStream.showText(meta.getOrDefault("personName", ""));
+
+                contentStream.endText();
+
+                // embed the image
+                ClassLoader ctx = Thread.currentThread().getContextClassLoader();
+                try (InputStream qesStream = ctx.getResourceAsStream("qes.png")) {
+                    if (qesStream == null) {
+                        throw new IOException("Input stream for qes.png was null (looks like the file is missing)");
                     }
+                    PDImageXObject image = PDImageXObject.createFromByteArray(doc, qesStream.readAllBytes(), "image/png");
+                    contentStream.drawImage(image, 0, 0, 20, 20);
                 }
-
-                // show text
-                float fontSize = 8;
-                float leading = fontSize * 1.5f;
-                cs.beginText();
-                cs.setFont(font, fontSize);
-                cs.setNonStrokingColor(Color.black);
-                cs.newLineAtOffset(fontSize, height - leading);
-                cs.setLeading(leading);
-
-                Calendar cal = signature.getSignDate();
-                ZoneId zoneId = ZoneId.of("Europe/Berlin");
-                LocalDateTime localDateTime = LocalDateTime.ofInstant(cal.toInstant(), zoneId);
-                DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy, HH:mm:ss");
-
-                String formattedDate = localDateTime.format(formatter);
-                String reason = signature.getReason();
-
-                cs.showText(String.format("%s %s", reason, formattedDate));
-
-                cs.endText();
             }
+            // END OF    MODIFICATIONS BY ARDEO GBMH
 
             // no need to set annotations and /P entry
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -428,5 +395,15 @@ public class PdfDocument implements Closeable {
         }
     }
 
+    private static PDFont loadFont(PDDocument doc) throws IOException {
+        var ctx = Thread.currentThread().getContextClassLoader();
+        try (var stream = ctx.getResourceAsStream("Ephesis-Regular.ttf")) {
+            if (stream == null) {
+                throw new IOException("Input stream for Ephesis-Regular.ttf was null (looks like the file is missing)");
+            }
+
+            return PDTrueTypeFont.load(doc, stream, Encoding.getInstance(COSName.WIN_ANSI_ENCODING));
+        }
+    }
 
 }

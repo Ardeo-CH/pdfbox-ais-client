@@ -1,5 +1,7 @@
 package com.swisscom.ais.client.model;
 
+import java.util.Map;
+
 public class VisibleSignatureDefinition {
 
     private int x = 0;
@@ -8,9 +10,13 @@ public class VisibleSignatureDefinition {
     private int height = 50;
     private int page = 0;
     private String iconPath;
+    private Map<String, String> meta;
 
-    public VisibleSignatureDefinition(){}
-    public VisibleSignatureDefinition(int x, int y, int width, int height, int page, String iconPath){
+    public VisibleSignatureDefinition() {
+    }
+
+    public VisibleSignatureDefinition(int x, int y, int width, int height, int page, String iconPath, Map<String, String> meta) {
+        this.meta = meta;
         this.setX(x);
         this.setY(y);
         this.setWidth(width);
@@ -65,5 +71,9 @@ public class VisibleSignatureDefinition {
 
     public void setWidth(int width) {
         this.width = width;
+    }
+
+    public Map<String, String> getMeta() {
+        return meta;
     }
 }
